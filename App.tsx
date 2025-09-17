@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { produce } from 'immer';
 import { MapInfo, Monster, MapData, Spot, Spawn, SpotType } from './types';
-import { monsterListData as initialMonsterList, monsterSpawnData as initialMonsterSpawn, mapListData as initialMapList } from './services/xmlData';
+// Fix: Removed unused imports causing compilation errors. The app loads data from files.
 import { generateMonsterImage } from './services/geminiService';
 import Card from './components/shared/Card';
 import Button from './components/shared/Button';
