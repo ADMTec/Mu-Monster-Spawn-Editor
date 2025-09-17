@@ -1,12 +1,9 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { produce } from 'immer';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-
-import type { Monster, MapData, MapInfo, Spot, Spawn } from './types';
-import { SpotType } from './types';
+import { produce } from 'immer';
+import { MapInfo, Monster, MapData, Spot, Spawn, SpotType } from './types';
+import { monsterListData as initialMonsterList, monsterSpawnData as initialMonsterSpawn, mapListData as initialMapList } from './services/xmlData';
 import { generateMonsterImage } from './services/geminiService';
-import { monsterListData as initialMonsterListData, monsterSpawnData as initialMonsterSpawnData, mapListData as initialMapListData } from './services/xmlData';
-
 import Card from './components/shared/Card';
 import Button from './components/shared/Button';
 import Spinner from './components/shared/Spinner';
@@ -14,473 +11,396 @@ import MapPreviewWindow from './components/MapPreviewWindow';
 
 const App: React.FC = () => {
     const [monsters, setMonsters] = useState<Monster[]>([]);
-    const [maps, setMaps] = useState<MapInfo[]>([]);
-    const [mapSpawns, setMapSpawns] = useState<MapData[]>([]);
+    const [mapInfos, setMapInfos] = useState<MapInfo[]>([]);
+    const [mapData, setMapData] = useState<MapData[]>([]);
     
     const [selectedMapNumber, setSelectedMapNumber] = useState<number | null>(null);
     const [selectedMonster, setSelectedMonster] = useState<Monster | null>(null);
-    const [selectedSpawn, setSelectedSpawn] = useState<Spawn | null>(null);
+    const [selectedSpawnUUID, setSelectedSpawnUUID] = useState<string | null>(null);
 
-    const [monsterImages, setMonsterImages] = useState<Record<string, string>>({});
-    const [loadingImage, setLoadingImage] = useState<number | null>(null);
-    
     const [showMapPreview, setShowMapPreview] = useState(false);
+    const [monsterImages, setMonsterImages] = useState<Record<string, string>>({});
+    const [loadingImages, setLoadingImages] = useState<string[]>([]);
     const [selectedMonsterForAdd, setSelectedMonsterForAdd] = useState<Monster | null>(null);
+    const [isAddSpotModalOpen, setIsAddSpotModalOpen] = useState(false);
+    const [newSpotDetails, setNewSpotDetails] = useState({ type: SpotType.SingleSpawn, description: '' });
 
-    const monsterFileInputRef = useRef<HTMLInputElement>(null);
-    const spawnFileInputRef = useRef<HTMLInputElement>(null);
-    const mapListFileInputRef = useRef<HTMLInputElement>(null);
+    const getAttributeValue = (element: Element, attributeName: string) => {
+        const value = element.getAttribute(attributeName);
+        return value ? value.trim() : null;
+    };
 
-    const toCamelCase = (str: string) => {
-        if (!str) return '';
-        return str.charAt(0).toLowerCase() + str.slice(1);
-    }
-
-    const parseAndLoadXml = (xmlString: string, parser: (doc: Document) => void) => {
-        try {
-            // Sanitize XML comments to prevent parsing errors from double hyphens
-            const sanitizedXml = xmlString.replace(/<!--([\s\S]*?)-->/g, (match, commentContent) => {
-                const sanitizedContent = commentContent.replace(/--/g, '- -'); // Replace -- with valid sequence
-                return `<!--${sanitizedContent}-->`;
-            });
-
-            const domParser = new DOMParser();
-            const doc = domParser.parseFromString(sanitizedXml, "application/xml");
-            const parseError = doc.querySelector("parsererror");
-            if (parseError) {
-                console.error("Error parsing XML:", parseError.textContent);
-                alert("Failed to parse XML file. Check console for details.");
-                return;
+    const parseMonsters = useCallback((xmlString: string): Monster[] => {
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+        const monsterNodes = xmlDoc.getElementsByTagName('Monster');
+        return Array.from(monsterNodes).map(node => {
+            const monster: any = {};
+            for (const attr of Array.from(node.attributes)) {
+                const camelCaseName = attr.name.charAt(0).toLowerCase() + attr.name.slice(1);
+                const value = isNaN(Number(attr.value)) ? attr.value : Number(attr.value);
+                monster[camelCaseName] = value;
             }
-            parser(doc);
-        } catch (error) {
-            console.error("Error processing file:", error);
-            alert("An error occurred while processing the file.");
-        }
-    };
-    
-    const handleLoadMonsterList = (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const content = e.target?.result as string;
-            parseAndLoadXml(content, (doc) => {
-                const monsterElements = Array.from(doc.getElementsByTagName("Monster"));
-                const loadedMonsters = monsterElements.map(el => {
-                    const monster: Partial<Monster> = {};
-                    for (const attr of Array.from(el.attributes)) {
-                        const key = toCamelCase(attr.name);
-                        const value = isNaN(Number(attr.value)) ? attr.value : Number(attr.value);
-                        (monster as any)[key] = value;
-                    }
-                    return monster as Monster;
-                });
-                setMonsters(loadedMonsters);
-                alert(`${loadedMonsters.length} monsters loaded successfully.`);
-            });
-        };
-        reader.readAsText(file);
-        event.target.value = '';
-    };
-
-    const handleLoadMapList = (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const content = e.target?.result as string;
-            parseAndLoadXml(content, (doc) => {
-                const mapElements = Array.from(doc.getElementsByTagName("Map"));
-                 const loadedMaps = mapElements.map(el => {
-                    const number = parseInt(el.getAttribute("Number") || '0', 10);
-                    const fileAttr = el.getAttribute("File") || '';
-                    const name = fileAttr.replace(/^\d+_/,'').replace('.att', '');
-                    return { number, file: fileAttr, name };
-                });
-                setMaps(loadedMaps);
-                alert(`${loadedMaps.length} maps loaded successfully.`);
-            });
-        };
-        reader.readAsText(file);
-        event.target.value = '';
-    };
-
-    const handleLoadSpawns = (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const content = e.target?.result as string;
-            parseAndLoadXml(content, (doc) => {
-                const mapElements = Array.from(doc.getElementsByTagName("Map"));
-                const loadedSpawns: { [key: number]: MapData } = {};
-                
-                mapElements.forEach(mapEl => {
-                    const number = parseInt(mapEl.getAttribute("Number") || '0', 10);
-                    const name = mapEl.getAttribute("Name") || `Map ${number}`;
-
-                    if (!loadedSpawns[number]) {
-                        loadedSpawns[number] = { number, name, spots: [] };
-                    }
-                    
-                    const spotElements = Array.from(mapEl.getElementsByTagName("Spot"));
-                    spotElements.forEach(spotEl => {
-                        const spot: Spot = {
-                            type: parseInt(spotEl.getAttribute("Type") || '0', 10),
-                            description: spotEl.getAttribute("Description") || "No description",
-                            spawns: Array.from(spotEl.getElementsByTagName("Spawn")).map(spawnEl => ({
-                                uuid: uuidv4(),
-                                index: parseInt(spawnEl.getAttribute("Index") || '0', 10),
-                                distance: parseInt(spawnEl.getAttribute("Distance") || '0', 10),
-                                startX: parseInt(spawnEl.getAttribute("StartX") || '0', 10),
-                                startY: parseInt(spawnEl.getAttribute("StartY") || '0', 10),
-                                endX: parseInt(spawnEl.getAttribute("EndX") || spawnEl.getAttribute("StartX") || '0', 10),
-                                endY: parseInt(spawnEl.getAttribute("EndY") || spawnEl.getAttribute("StartY") || '0', 10),
-                                dir: parseInt(spawnEl.getAttribute("Dir") || '-1', 10),
-                                count: parseInt(spawnEl.getAttribute("Count") || '1', 10),
-                                element: parseInt(spawnEl.getAttribute("Element") || '0', 10),
-                            }))
-                        };
-                        loadedSpawns[number].spots.push(spot);
-                    });
-                });
-                
-                const spawnsArray = Object.values(loadedSpawns);
-                setMapSpawns(spawnsArray);
-                alert(`${spawnsArray.length} maps with spawns loaded.`);
-                if (spawnsArray.length > 0) {
-                   setSelectedMapNumber(spawnsArray[0].number);
-                }
-            });
-        };
-        reader.readAsText(file);
-        event.target.value = '';
-    };
-
-    const allMapsCombined = useMemo(() => {
-        const combined = new Map<number, MapInfo>();
-        maps.forEach(map => combined.set(map.number, { ...map, name: map.name || `Map ${map.number}` }));
-        mapSpawns.forEach(spawnMap => {
-            if (!combined.has(spawnMap.number)) {
-                combined.set(spawnMap.number, { number: spawnMap.number, name: spawnMap.name, file: '' });
-            } else {
-                 const existing = combined.get(spawnMap.number)!;
-                 if (!existing.name || existing.name.startsWith("Map ")) {
-                     existing.name = spawnMap.name;
-                 }
-            }
+            return monster as Monster;
         });
-        return Array.from(combined.values()).sort((a, b) => a.number - b.number);
-    }, [maps, mapSpawns]);
+    }, []);
     
-    const selectedMapData = useMemo(() => {
-        if (selectedMapNumber === null) return null;
-        return mapSpawns.find(m => m.number === selectedMapNumber) || { number: selectedMapNumber, name: allMapsCombined.find(m=>m.number === selectedMapNumber)?.name || `Map ${selectedMapNumber}`, spots: []};
-    }, [selectedMapNumber, mapSpawns, allMapsCombined]);
-
-    const handleMapSelect = useCallback((mapNumber: number) => {
-        setSelectedMapNumber(mapNumber);
-        setSelectedMonster(null);
-        setSelectedSpawn(null);
-        setSelectedMonsterForAdd(null);
+    const parseMapList = useCallback((xmlString: string): MapInfo[] => {
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+        const mapNodes = xmlDoc.querySelectorAll('DefaultMaps Map');
+        return Array.from(mapNodes).map(node => {
+            const fileAttr = getAttributeValue(node, 'File') || '';
+            const nameMatch = fileAttr.match(/\d+_(.+?)\.att/);
+            const name = nameMatch ? nameMatch[1].replace(/_/g, ' ') : `Map ${getAttributeValue(node, 'Number')}`;
+            return {
+                number: Number(getAttributeValue(node, 'Number')),
+                file: fileAttr,
+                name: name,
+            };
+        });
     }, []);
 
-    const handleMonsterSelect = useCallback((monster: Monster) => {
-        setSelectedMonster(monster);
-        setSelectedSpawn(null);
-        if (!monsterImages[monster.index]) {
-            setLoadingImage(monster.index);
-            generateMonsterImage(monster.name).then(imageUrl => {
-                setMonsterImages(prev => ({...prev, [monster.index]: imageUrl}));
-            }).finally(() => {
-                setLoadingImage(null);
-            });
-        }
-    }, [monsterImages]);
-
-    const handleMapMonsterSelect = useCallback((spawn: Spawn) => {
-        const monster = monsters.find(m => m.index === spawn.index);
-        if (monster) {
-            setSelectedMonster(monster);
-        }
-        setSelectedSpawn(spawn);
-    }, [monsters]);
-
-    const handleSetMonsterForAdd = useCallback((monster: Monster) => {
-        if (selectedMonsterForAdd?.index === monster.index) {
-            setSelectedMonsterForAdd(null);
-        } else {
-            setSelectedMonsterForAdd(monster);
-            setShowMapPreview(true);
-        }
-    }, [selectedMonsterForAdd]);
-
-    const handleAddSpawn = useCallback((x: number, y: number) => {
-        if (!selectedMonsterForAdd || !selectedMapData) return;
-        const newSpawn: Spawn = {
-            uuid: uuidv4(),
-            index: selectedMonsterForAdd.index,
-            distance: 5, startX: x, startY: y, endX: x, endY: y, dir: -1, count: 1,
-        };
-
-        const updatedSpawns = produce(mapSpawns, draft => {
-            let map = draft.find(m => m.number === selectedMapData.number);
-            if (!map) {
-                map = { number: selectedMapData.number, name: selectedMapData.name, spots: [] };
-                draft.push(map);
-            }
-            let spot = map.spots.find(s => s.type === 2);
-            if (!spot) {
-                spot = { type: 2, description: "Single Monster Spawn", spawns: [] };
-                map.spots.push(spot);
-            }
-            spot.spawns.push(newSpawn);
-        });
-        setMapSpawns(updatedSpawns);
-    }, [selectedMonsterForAdd, selectedMapData, mapSpawns]);
-    
-    const handleAddAreaSpawn = useCallback((startX: number, startY: number, endX: number, endY: number) => {
-        if (!selectedMonsterForAdd || !selectedMapData) return;
+    const parseMapSpawns = useCallback((xmlString: string, allMonsters: Monster[]): MapData[] => {
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+        const mapNodes = xmlDoc.getElementsByTagName('Map');
+        const monsterNameMap = allMonsters.reduce((acc, m) => ({ ...acc, [m.index]: m.name }), {} as Record<number, string>);
         
-        const countStr = prompt(`Enter number of ${selectedMonsterForAdd.name} for this area:`, "10");
-        if (countStr === null) return;
-        const count = parseInt(countStr, 10);
-        if (isNaN(count) || count <= 0) {
-            alert("Invalid count entered.");
-            return;
-        }
+        const mapsRecord: Record<number, MapData> = {};
 
-        const newSpawn: Spawn = {
-            uuid: uuidv4(),
-            index: selectedMonsterForAdd.index,
-            distance: Math.max(5, Math.round(Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2)) / 2)),
-            startX, startY, endX, endY, dir: -1, count,
-        };
-
-        const updatedSpawns = produce(mapSpawns, draft => {
-            let map = draft.find(m => m.number === selectedMapData.number);
-            if (!map) {
-                map = { number: selectedMapData.number, name: selectedMapData.name, spots: [] };
-                draft.push(map);
+        Array.from(mapNodes).forEach(mapNode => {
+            const mapNumber = Number(getAttributeValue(mapNode, 'Number'));
+            
+            if (isNaN(mapNumber)) return;
+            
+            if (!mapsRecord[mapNumber]) {
+                mapsRecord[mapNumber] = {
+                    number: mapNumber,
+                    name: getAttributeValue(mapNode, 'Name') || `Map ${mapNumber}`,
+                    spots: [],
+                };
             }
-            let spot = map.spots.find(s => s.type === 1);
-            if (!spot) {
-                spot = { type: 1, description: "Multiple Monsters Spawn", spawns: [] };
-                map.spots.push(spot);
-            }
-            spot.spawns.push(newSpawn);
-        });
-        setMapSpawns(updatedSpawns);
-    }, [selectedMonsterForAdd, selectedMapData, mapSpawns]);
-
-    const handleDeleteSpawn = useCallback((spawnToDelete: Spawn) => {
-        const updatedSpawns = produce(mapSpawns, draft => {
-            const map = draft.find(m => m.number === selectedMapData?.number);
-            if (map) {
-                map.spots.forEach(spot => {
-                    spot.spawns = spot.spawns.filter(s => s.uuid !== spawnToDelete.uuid);
+            
+            const spotNodes = mapNode.getElementsByTagName('Spot');
+            Array.from(spotNodes).forEach(spotNode => {
+                const spot: Spot = {
+                    type: Number(getAttributeValue(spotNode, 'Type')),
+                    description: getAttributeValue(spotNode, 'Description') || `Spot`,
+                    spawns: [],
+                };
+                
+                const spawnNodes = spotNode.getElementsByTagName('Spawn');
+                Array.from(spawnNodes).forEach(spawnNode => {
+                    const spawn: Spawn = {
+                        uuid: uuidv4(),
+                        index: Number(getAttributeValue(spawnNode, 'Index')),
+                        distance: Number(getAttributeValue(spawnNode, 'Distance') || '0'),
+                        startX: Number(getAttributeValue(spawnNode, 'StartX') || '0'),
+                        startY: Number(getAttributeValue(spawnNode, 'StartY') || '0'),
+                        endX: Number(getAttributeValue(spawnNode, 'EndX') || getAttributeValue(spawnNode, 'StartX') || '0'),
+                        endY: Number(getAttributeValue(spawnNode, 'EndY') || getAttributeValue(spawnNode, 'StartY') || '0'),
+                        dir: Number(getAttributeValue(spawnNode, 'Dir') || '-1'),
+                        count: Number(getAttributeValue(spawnNode, 'Count') || '1'),
+                        element: getAttributeValue(spawnNode, 'Element') ? Number(getAttributeValue(spawnNode, 'Element')) : undefined,
+                        monsterName: monsterNameMap[Number(getAttributeValue(spawnNode, 'Index'))] || 'Unknown'
+                    };
+                    spot.spawns.push(spawn);
                 });
-                map.spots = map.spots.filter(spot => spot.spawns.length > 0);
-            }
+                mapsRecord[mapNumber].spots.push(spot);
+            });
         });
-        setMapSpawns(updatedSpawns);
-        setSelectedSpawn(null);
-        setSelectedMonster(null);
-    }, [mapSpawns, selectedMapData]);
-
-    const handleSpawnPropertyChange = (uuid: string, field: keyof Spawn, value: string) => {
-        const numValue = parseInt(value, 10);
-        if (isNaN(numValue)) return;
         
-        const updatedSpawns = produce(mapSpawns, draft => {
-            const map = draft.find(m => m.number === selectedMapData?.number);
-            if (map) {
-                for (const spot of map.spots) {
-                    const spawn = spot.spawns.find(s => s.uuid === uuid);
-                    if (spawn) {
-                        (spawn as any)[field] = numValue;
-                        if (selectedSpawn?.uuid === uuid) {
-                           setSelectedSpawn({ ...spawn, [field]: numValue });
-                        }
-                        break;
-                    }
-                }
-            }
-        });
-        setMapSpawns(updatedSpawns);
+        return Object.values(mapsRecord);
+    }, []);
+    
+    const parseAndLoadXml = async (file: File, parser: (xml: string, monsters?: Monster[]) => any, setter: (data: any) => void, secondaryData?: any) => {
+        try {
+            let text = await file.text();
+            text = text.replace(/<!--(.*?)--/g, (match, content) => `<!--${content.replace(/--/g, '- -')}-->`);
+            const parsedData = parser(text, secondaryData);
+            setter(parsedData);
+        } catch (error) {
+            console.error("Error parsing XML:", error);
+            alert(`Failed to parse ${file.name}. Check console for details.`);
+        }
+    };
+
+    const handleFileLoad = (parser: (xml: string, monsters?: Monster[]) => any, setter: (data: any) => void, secondaryData?: any) => (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            parseAndLoadXml(file, parser, setter, secondaryData);
+        }
     };
     
-    const monsterNameMap = useMemo(() => {
-        return monsters.reduce((acc, monster) => {
-            acc[monster.index] = monster.name;
-            return acc;
-        }, {} as Record<number, string>);
-    }, [monsters]);
-
+    const combinedMapList = useMemo(() => {
+        const allMaps = new Map<number, MapInfo>();
+        mapInfos.forEach(map => allMaps.set(map.number, map));
+        mapData.forEach(md => {
+            if (!allMaps.has(md.number)) {
+                allMaps.set(md.number, { number: md.number, file: '', name: md.name });
+            } else {
+                const existing = allMaps.get(md.number)!;
+                if (!existing.name) existing.name = md.name;
+            }
+        });
+        return Array.from(allMaps.values()).sort((a, b) => a.number - b.number);
+    }, [mapInfos, mapData]);
+    
     const totalMonsterCount = useMemo(() => {
-        return mapSpawns.reduce((total, map) => {
+        return mapData.reduce((total, map) => {
             return total + map.spots.reduce((mapTotal, spot) => {
                 return mapTotal + spot.spawns.reduce((spotTotal, spawn) => spotTotal + spawn.count, 0);
             }, 0);
         }, 0);
-    }, [mapSpawns]);
+    }, [mapData]);
 
-    const getSpotTypeName = (type: SpotType) => {
-        switch (type) {
-            case SpotType.NPC: return "NPC/Traps";
-            case SpotType.MultiSpawn: return "Multiple Monsters Spawn";
-            case SpotType.SingleSpawn: return "Single Monster Spawn";
-            case SpotType.ElementalSpawn: return "Elemental Monster Spawn";
-            default: return "Unknown Spot Type";
+    const handleGenerateImage = async (monster: Monster) => {
+        if (monsterImages[monster.name] || loadingImages.includes(monster.name)) return;
+        setLoadingImages(produce(draft => { draft.push(monster.name); }));
+        const imageUrl = await generateMonsterImage(monster.name);
+        setMonsterImages(produce(draft => { draft[monster.name] = imageUrl; }));
+        setLoadingImages(produce(draft => {
+            const index = draft.indexOf(monster.name);
+            if (index > -1) draft.splice(index, 1);
+        }));
+    };
+    
+    const handleAddSpot = () => {
+        if (selectedMapNumber === null) return;
+        setMapData(produce(draft => {
+            const map = draft.find(m => m.number === selectedMapNumber);
+            if (map) {
+                map.spots.push({
+                    type: newSpotDetails.type,
+                    description: newSpotDetails.description || `New Spot ${map.spots.length + 1}`,
+                    spawns: []
+                });
+            }
+        }));
+        setIsAddSpotModalOpen(false);
+        setNewSpotDetails({ type: SpotType.SingleSpawn, description: '' });
+    };
+
+    const addSpawnToMap = (newSpawn: Omit<Spawn, 'uuid' | 'monsterName'>, spotType: SpotType, spotDescription: string) => {
+        if (selectedMapNumber === null) return;
+        setMapData(produce(draft => {
+            const map = draft.find(m => m.number === selectedMapNumber);
+            if (map) {
+                let spot = map.spots.find(s => s.type === spotType);
+                if (!spot) {
+                    spot = { type: spotType, description: spotDescription, spawns: [] };
+                    map.spots.push(spot);
+                }
+                spot.spawns.push({
+                    ...newSpawn,
+                    uuid: uuidv4(),
+                    monsterName: monsters.find(m => m.index === newSpawn.index)?.name || 'Unknown'
+                });
+            }
+        }));
+        setSelectedMonsterForAdd(null);
+    };
+
+    const onAddSpawn = (x: number, y: number) => {
+        if (!selectedMonsterForAdd) return;
+        addSpawnToMap({
+            index: selectedMonsterForAdd.index,
+            distance: 10,
+            startX: x, startY: y, endX: x, endY: y,
+            dir: -1, count: 1
+        }, SpotType.SingleSpawn, 'Single Monster Spawn');
+    };
+
+    const onAddAreaSpawn = (startX: number, startY: number, endX: number, endY: number) => {
+        if (!selectedMonsterForAdd) return;
+        addSpawnToMap({
+            index: selectedMonsterForAdd.index,
+            distance: 0,
+            startX, startY, endX, endY,
+            dir: -1, count: 10,
+        }, SpotType.MultiSpawn, 'Multiple Monsters Spawn');
+    };
+    
+    const handleDeleteSpawn = (spawnToDelete: Spawn) => {
+        setMapData(produce(draft => {
+            const map = draft.find(m => m.number === selectedMapNumber);
+            if (map) {
+                map.spots.forEach(spot => {
+                    spot.spawns = spot.spawns.filter(s => s.uuid !== spawnToDelete.uuid);
+                });
+                map.spots = map.spots.filter(s => s.spawns.length > 0);
+            }
+        }));
+        if (selectedSpawnUUID === spawnToDelete.uuid) {
+            setSelectedSpawnUUID(null);
         }
     };
 
+    const handleUpdateSpawn = (updatedSpawn: Spawn) => {
+        setMapData(produce(draft => {
+             const map = draft.find(m => m.number === selectedMapNumber);
+             if(map) {
+                 for(const spot of map.spots) {
+                     const spawnIndex = spot.spawns.findIndex(s => s.uuid === updatedSpawn.uuid);
+                     if(spawnIndex !== -1) {
+                         spot.spawns[spawnIndex] = updatedSpawn;
+                         break;
+                     }
+                 }
+             }
+        }));
+    };
+    
+    const selectedMapData = mapData.find(m => m.number === selectedMapNumber) || null;
+    const selectedSpawn = selectedMapData?.spots.flatMap(s => s.spawns).find(s => s.uuid === selectedSpawnUUID) || null;
+    const monsterForDetailView = selectedSpawn ? monsters.find(m => m.index === selectedSpawn.index) : selectedMonster;
+
     return (
-        <div className="bg-gray-900 text-gray-200 min-h-screen font-sans flex flex-col">
-            <header className="bg-gray-950 p-2 border-b border-gray-700 shadow-lg flex items-center justify-between">
+        <div className="bg-gray-900 text-gray-200 min-h-screen font-sans p-2 flex flex-col gap-2">
+            <header className="flex justify-between items-center pb-2 border-b border-gray-700 flex-wrap gap-2">
                 <h1 className="text-lg font-bold text-gray-100">MU Monster Spawn Editor</h1>
-                <div className="flex gap-2">
-                    <Button onClick={() => monsterFileInputRef.current?.click()}>Load MonsterList.xml</Button>
-                    <Button onClick={() => mapListFileInputRef.current?.click()}>Load MapList.xml</Button>
-                    <Button onClick={() => spawnFileInputRef.current?.click()}>Load MonsterSpawn.xml</Button>
-                    <input type="file" ref={monsterFileInputRef} onChange={handleLoadMonsterList} style={{ display: 'none' }} accept=".xml" />
-                    <input type="file" ref={mapListFileInputRef} onChange={handleLoadMapList} style={{ display: 'none' }} accept=".xml" />
-                    <input type="file" ref={spawnFileInputRef} onChange={handleLoadSpawns} style={{ display: 'none' }} accept=".xml" />
+                <div className="flex gap-2 items-center flex-wrap">
+                    <input type="file" id="monsterListFile" className="hidden" accept=".xml" onChange={handleFileLoad(parseMonsters, setMonsters)} />
+                    <Button onClick={() => document.getElementById('monsterListFile')?.click()}>Load MonsterList.xml</Button>
+                    <input type="file" id="mapListFile" className="hidden" accept=".xml" onChange={handleFileLoad(parseMapList, setMapInfos)} />
+                    <Button onClick={() => document.getElementById('mapListFile')?.click()}>Load MapList.xml</Button>
+                    <input type="file" id="spawnFile" className="hidden" accept=".xml" onChange={handleFileLoad(parseMapSpawns, setMapData, monsters)} />
+                    <Button onClick={() => document.getElementById('spawnFile')?.click()}>Load MonsterSpawn.xml</Button>
+                    <Button onClick={() => setShowMapPreview(true)} disabled={!selectedMapData}>Map Preview</Button>
                 </div>
             </header>
-            <main className="flex-grow flex p-4 gap-4 overflow-hidden">
+
+            <main className="grid grid-cols-1 md:grid-cols-3 gap-2 flex-grow min-h-0">
                 {/* Left Column */}
-                <div className="w-1/3 flex flex-col gap-4">
-                     <Card title="Maps" headerContent={<span className="text-xs text-gray-400">{allMapsCombined.length} Maps | Total Monsters: {totalMonsterCount}</span>}>
-                        <div className="overflow-y-auto flex-grow">
-                            <ul className="p-1 space-y-px">
-                                {allMapsCombined.map(map => {
-                                     const monsterCount = mapSpawns.find(m => m.number === map.number)?.spots.reduce((acc, spot) => acc + spot.spawns.reduce((sAcc, s) => sAcc + s.count, 0), 0) || 0;
-                                    return (
-                                        <li key={map.number}
-                                            onClick={() => handleMapSelect(map.number)}
-                                            className={`text-sm p-2 cursor-pointer rounded-md transition-colors hover:bg-gray-700 flex justify-between items-center ${selectedMapNumber === map.number ? 'bg-blue-800 hover:bg-blue-700' : ''}`}>
-                                            <span>{map.number} - {map.name}</span>
-                                            <span className="text-xs bg-gray-600 px-2 py-0.5 rounded-full">{monsterCount}</span>
-                                        </li>
-                                    )
-                                })}
-                            </ul>
+                <div className="flex flex-col gap-2 min-h-0">
+                    <Card title={`Maps (${combinedMapList.length}) - Total Monsters: ${totalMonsterCount}`} className="flex-1">
+                        <div className="overflow-y-auto p-1">
+                            {combinedMapList.map(map => (
+                                <div key={map.number} onClick={() => setSelectedMapNumber(map.number)}
+                                    className={`cursor-pointer p-1.5 text-xs rounded flex justify-between items-center ${selectedMapNumber === map.number ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>
+                                    <span>{map.number} - {map.name}</span>
+                                    <span className="text-gray-400 text-2xs">({mapData.find(m=>m.number === map.number)?.spots.reduce((acc, s) => acc + s.spawns.reduce((sAcc, sp) => sAcc + sp.count, 0), 0) || 0})</span>
+                                </div>
+                            ))}
                         </div>
                     </Card>
-                    <Card title="All Monsters">
-                       <div className="overflow-y-auto flex-grow">
-                            <ul className="p-1 space-y-px">
-                                {monsters.map(monster => (
-                                    <li key={monster.index}
-                                        onClick={() => handleMonsterSelect(monster)}
-                                        className={`text-sm p-2 cursor-pointer rounded-md transition-colors hover:bg-gray-700 flex justify-between items-center ${selectedMonster?.index === monster.index && !selectedSpawn ? 'bg-blue-800 hover:bg-blue-700' : ''}`}>
-                                        <span>{monster.name}</span>
-                                        {selectedMonsterForAdd?.index === monster.index && <span className="text-xs bg-green-600 px-2 py-0.5 rounded-full">Adding</span>}
-                                    </li>
-                                ))}
-                            </ul>
+                    <Card title={`All Monsters (${monsters.length})`} className="flex-1">
+                         <div className="overflow-y-auto p-1">
+                            {monsters.map(monster => (
+                                <div key={monster.index} onClick={() => { setSelectedMonster(monster); setSelectedSpawnUUID(null); }}
+                                    className={`cursor-pointer p-1.5 text-xs rounded ${selectedMonster?.index === monster.index && !selectedSpawnUUID ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>
+                                    {monster.name}
+                                </div>
+                            ))}
                         </div>
                     </Card>
                 </div>
 
-                {/* Center Column */}
-                <div className="w-1/3 flex flex-col">
-                     <Card title={selectedMapData?.name ? `Monsters in ${selectedMapData.name}` : 'Select a Map'} headerContent={
-                        selectedMapData && <Button onClick={() => setShowMapPreview(true)}>Open Map Preview</Button>
-                    }>
-                       <div className="p-2 overflow-y-auto flex-grow">
-                            {selectedMapData?.spots.map((spot, i) => (
-                                <div key={`${spot.type}-${i}`} className="mb-3">
-                                    <h3 className="text-xs font-semibold text-cyan-400 border-b border-gray-700 mb-2 pb-1">{getSpotTypeName(spot.type)}: <span className="text-gray-400 font-normal">{spot.description}</span></h3>
-                                    <ul className="space-y-1">
-                                        {spot.spawns.map((spawn) => (
-                                            <li key={spawn.uuid} onClick={() => handleMapMonsterSelect(spawn)} 
-                                            className={`text-xs bg-gray-700/50 p-2 rounded-md flex justify-between items-center cursor-pointer hover:bg-gray-600/50 ${selectedSpawn?.uuid === spawn.uuid ? 'ring-2 ring-cyan-500' : ''}`}>
-                                                <div>
-                                                    <span className="font-bold text-gray-300">{monsterNameMap[spawn.index] || 'Unknown'} {spawn.count > 1 ? `(${spawn.count})` : ''}</span>
-                                                </div>
-                                                 <Button className="bg-red-800 hover:bg-red-700 text-white text-xs !px-2 !py-0.5 rounded-sm" onClick={(e) => { e.stopPropagation(); handleDeleteSpawn(spawn); }}>X</Button>
+                {/* Middle Column */}
+                <Card title="Map Monsters" className="min-h-0" headerContent={<Button onClick={() => setIsAddSpotModalOpen(true)} disabled={selectedMapNumber === null}>Add New Spot</Button>}>
+                    <div className="overflow-y-auto p-1">
+                        {selectedMapData ? (
+                            selectedMapData.spots.map((spot, spotIndex) => (
+                                <div key={spotIndex} className="mb-2">
+                                    <h3 className="text-xs font-semibold text-cyan-400 bg-gray-900 p-1 rounded-t">{spot.type === SpotType.NPC ? "NPC/Traps" : spot.type === SpotType.MultiSpawn ? "Multiple Monsters Spawn" : spot.type === SpotType.SingleSpawn ? "Single Monster Spawn" : "Elemental Monster Spawn"} - <span className="font-light text-gray-400">{spot.description}</span></h3>
+                                    <ul className="bg-gray-800/50 rounded-b">
+                                        {spot.spawns.map(spawn => (
+                                            <li key={spawn.uuid} onClick={() => { setSelectedSpawnUUID(spawn.uuid); setSelectedMonster(null); }}
+                                                className={`cursor-pointer p-1.5 text-xs rounded flex justify-between items-center ${selectedSpawnUUID === spawn.uuid ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>
+                                                <span>{spawn.monsterName} {spawn.count > 1 ? `(${spawn.count})` : ''}</span>
+                                                <button className="text-red-500 hover:text-red-300 font-bold px-1" onClick={(e) => { e.stopPropagation(); handleDeleteSpawn(spawn); }}>×</button>
                                             </li>
                                         ))}
                                     </ul>
                                 </div>
-                            ))}
-                             {(!selectedMapData || selectedMapData.spots.length === 0) && <p className="text-sm text-gray-400 p-4 text-center">No spawn spots on this map.</p>}
-                        </div>
-                    </Card>
-                </div>
+                            ))
+                        ) : <p className="p-2 text-xs text-gray-400">Select a map to see monster spawns.</p>}
+                    </div>
+                </Card>
 
                 {/* Right Column */}
-                <div className="w-1/3 flex flex-col">
-                     <Card title="Details">
-                        <div className="p-4 flex-grow overflow-y-auto">
-                           {selectedMonster ? (
-                            <>
-                                <div className="flex gap-4 items-start">
-                                    <div className="w-32 h-32 bg-gray-900 flex-shrink-0 flex items-center justify-center border border-gray-700 rounded-md overflow-hidden">
-                                        {loadingImage === selectedMonster.index && <Spinner />}
-                                        {monsterImages[selectedMonster.index] && <img src={monsterImages[selectedMonster.index]} alt={selectedMonster.name} className="w-full h-full object-cover" />}
-                                        {!loadingImage && !monsterImages[selectedMonster.index] && <div className="text-gray-500 text-xs text-center p-2">No image</div>}
-                                    </div>
-                                    <div>
-                                        <h3 className="text-lg font-bold text-white mb-2">{selectedMonster.name}</h3>
-                                         <div className="text-xs grid grid-cols-2 gap-x-6 gap-y-1 content-start">
-                                            <p>Level: <span className="font-semibold text-gray-300">{selectedMonster.level}</span></p>
-                                            <p>HP: <span className="font-semibold text-gray-300">{selectedMonster.hp}</span></p>
-                                            <p>Damage: <span className="font-semibold text-gray-300">{selectedMonster.damageMin}-{selectedMonster.damageMax}</span></p>
-                                            <p>Defense: <span className="font-semibold text-gray-300">{selectedMonster.defense}</span></p>
+                <Card title="Details" className="min-h-0">
+                    <div className="p-3 overflow-y-auto">
+                        {selectedSpawn && (
+                            <div className="space-y-2 text-xs">
+                                <h3 className="font-bold text-base text-cyan-400">{selectedSpawn.monsterName} (Spawn)</h3>
+                                {Object.entries(selectedSpawn).map(([key, value]) => {
+                                     if (key === 'uuid' || key === 'monsterName') return null;
+                                     return (
+                                        <div key={key} className="flex items-center">
+                                            <label className="w-28 capitalize text-gray-400">{key.replace(/([A-Z])/g, ' $1')}:</label>
+                                            <input type="text" value={value?.toString() || ''}
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    handleUpdateSpawn({ ...selectedSpawn, [key]: isNaN(Number(val)) ? val : Number(val) });
+                                                }}
+                                                className="bg-gray-900 border border-gray-600 text-gray-200 text-xs rounded px-2 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-blue-500" />
                                         </div>
-                                    </div>
+                                    )
+                                })}
+                            </div>
+                        )}
+                        {monsterForDetailView && !selectedSpawn && (
+                            <div>
+                                <div className="flex justify-between items-center mb-2">
+                                    <h3 className="font-bold text-base text-cyan-400">{monsterForDetailView.name}</h3>
+                                    <Button onClick={() => { setSelectedMonsterForAdd(monsterForDetailView); setShowMapPreview(true); }} disabled={!selectedMapData}>
+                                        Add to Map
+                                    </Button>
                                 </div>
-                                <div className="mt-4">
-                                     {selectedSpawn ? (
-                                        <div className="space-y-2">
-                                            <h4 className="text-sm font-semibold text-cyan-400 mt-4 border-t border-gray-700 pt-3">Spawn Properties</h4>
-                                             <div className="grid grid-cols-2 gap-2 text-xs">
-                                                {Object.entries({
-                                                    count: "Count",
-                                                    startX: "Start X",
-                                                    startY: "Start Y",
-                                                    endX: "End X",
-                                                    endY: "End Y",
-                                                    distance: "Radius",
-                                                    dir: "Direction",
-                                                }).map(([key, label]) => (
-                                                    <div key={key}>
-                                                        <label className="block text-gray-400 mb-1">{label}</label>
-                                                        <input type="number" value={(selectedSpawn as any)[key]} onChange={e => handleSpawnPropertyChange(selectedSpawn.uuid, key as keyof Spawn, e.target.value)}
-                                                        className="w-full bg-gray-900 border border-gray-600 rounded-md p-1 focus:ring-2 focus:ring-blue-500 focus:outline-none" />
-                                                    </div>
-                                                ))}
-                                             </div>
+                                <div className="flex flex-col items-center mb-3">
+                                    {loadingImages.includes(monsterForDetailView.name) ? <div className="w-32 h-32 bg-gray-700 flex items-center justify-center rounded"><Spinner /></div>
+                                     : monsterImages[monsterForDetailView.name] ? <img src={monsterImages[monsterForDetailView.name]} alt={monsterForDetailView.name} className="w-32 h-32 object-cover border border-gray-600 rounded"/>
+                                     : <div className="w-32 h-32 bg-gray-700 flex items-center justify-center text-gray-400 text-center rounded">No Image</div>
+                                    }
+                                    <Button onClick={() => handleGenerateImage(monsterForDetailView)} className="mt-2 w-32" disabled={loadingImages.includes(monsterForDetailView.name) || !!monsterImages[monsterForDetailView.name]}>
+                                        {loadingImages.includes(monsterForDetailView.name) ? "Generating..." : monsterImages[monsterForDetailView.name] ? "Generated" : "Generate Image"}
+                                    </Button>
+                                </div>
+                                <div className="space-y-1 text-xs">
+                                    {Object.entries(monsterForDetailView).map(([key, value]) => (
+                                        <div key={key}>
+                                            <span className="font-semibold text-gray-400 capitalize">{key.replace(/([A-Z])/g, ' $1')}: </span>
+                                            <span className="text-gray-200">{value.toString()}</span>
                                         </div>
-                                     ) : (
-                                        <Button className="w-full mt-4" onClick={() => handleSetMonsterForAdd(selectedMonster)}>
-                                            {selectedMonsterForAdd?.index === selectedMonster.index ? 'Cancel Adding to Map' : 'Add to Map'}
-                                        </Button>
-                                     )}
+                                    ))}
                                 </div>
-                            </>
-                           ) : (
-                             <div className="flex items-center justify-center h-full text-gray-500">
-                                Select a monster to see details.
-                             </div>  
-                           )}
-                        </div>
-                    </Card>
-                </div>
+                            </div>
+                        )}
+                        {!selectedSpawn && !monsterForDetailView && <p className="text-xs text-gray-400">Select a monster or a spawn to see details.</p>}
+                    </div>
+                </Card>
             </main>
-            {showMapPreview && <MapPreviewWindow 
-                show={showMapPreview}
-                onClose={() => setShowMapPreview(false)}
-                mapData={selectedMapData}
-                allMonsters={monsters}
-                selectedMonsterForAdd={selectedMonsterForAdd}
-                onAddSpawn={handleAddSpawn}
-                onAddAreaSpawn={handleAddAreaSpawn}
-            />}
+
+            <MapPreviewWindow show={showMapPreview} onClose={() => { setShowMapPreview(false); setSelectedMonsterForAdd(null); }}
+                mapData={selectedMapData} allMonsters={monsters} selectedMonsterForAdd={selectedMonsterForAdd}
+                onAddSpawn={onAddSpawn} onAddAreaSpawn={onAddAreaSpawn} />
+            
+            {isAddSpotModalOpen && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                    <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 w-96 space-y-3">
+                        <h2 className="text-lg font-bold">Add New Spot</h2>
+                        <div>
+                            <label className="text-sm text-gray-400 block mb-1">Spot Type</label>
+                            <select value={newSpotDetails.type} onChange={e => setNewSpotDetails({...newSpotDetails, type: Number(e.target.value)})} className="bg-gray-900 border border-gray-600 text-gray-200 text-sm rounded px-2 py-1 w-full focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                <option value={SpotType.NPC}>NPC/Traps</option>
+                                <option value={SpotType.MultiSpawn}>Multiple Monsters Spawn</option>
+                                <option value={SpotType.SingleSpawn}>Single Monster Spawn</option>
+                                <option value={SpotType.ElementalSpawn}>Elemental Monster Spawn</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="text-sm text-gray-400 block mb-1">Description</label>
+                            <input type="text" value={newSpotDetails.description} onChange={e => setNewSpotDetails({...newSpotDetails, description: e.target.value})} className="bg-gray-900 border border-gray-600 text-gray-200 text-sm rounded px-2 py-1 w-full focus:outline-none focus:ring-1 focus:ring-blue-500" placeholder="e.g., Lorencia Spiders" />
+                        </div>
+                        <div className="flex justify-end gap-2 mt-4">
+                            <Button onClick={() => setIsAddSpotModalOpen(false)} className="bg-gray-600 hover:bg-gray-500">Cancel</Button>
+                            <Button onClick={handleAddSpot} className="bg-blue-600 hover:bg-blue-500">Create Spot</Button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
