@@ -1,0 +1,5 @@
+{
+  "name": "MU Monster Spawn Editor",
+  "description": "A web-based tool to visualize and edit monster data and spawn points from MU Online XML files, inspired by classic game editors. Features a dynamic map preview and AI-generated monster images.",
+  "requestFramePermissions": []
+}
